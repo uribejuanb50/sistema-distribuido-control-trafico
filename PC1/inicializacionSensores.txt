@@ -1,0 +1,3 @@
+GPS-2;gps;6
+CAM-1;camara;INT_F4;5
+ESP-43;espira;INT_F3;4;4
