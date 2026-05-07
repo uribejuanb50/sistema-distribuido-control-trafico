@@ -1,0 +1,77 @@
+class Espira(Sensor):
+    def __init__ (self, idSensor, tipoSensor, interseccion, timestamp, intervaloDeTiempo):
+        super().__init__(idSensor, tipoSensor)
+        
+        self.interseccion = interseccion
+        self.timestampPrevio = timestamp
+        self.vehiculosContados = 0
+        self.intervaloDeTiempo = float(intervaloDeTiempo)
+
+    def informacionSensor(self):
+        stringRetorno = super().informacionSensor()
+        stringRetorno += f"interseccion : {self.interseccion}" + saltoLinea
+        stringRetorno += f"timeStampPrevio: {self.timestampPrevio}" + saltoLinea
+        stringRetorno += f"vehiculosContados: {math.floor(self.vehiculosContados)}" + saltoLinea
+        stringRetorno += f"intervaloDeTiempo (segundos) : {self.intervaloDeTiempo}" + saltoLinea
+
+        return stringRetorno
+    
+    def crearJSON(self):
+        return json.dumps({
+            "sensor_id": self.idSensor,
+            "tipo_sensor": self.tipoSensor,
+            "timestamp": str(self.timeStampEnvio),
+            "interseccion": self.interseccion,
+            "timestamp_previo": str(self.timestampPrevio),
+            "vehiculos_contados": math.floor(self.vehiculosContados),
+            "intervalo_segundos": self.intervaloDeTiempo
+        })
+
+    def simular(self, 
+                chanceGeneracionVehicular, 
+                volumenVehicular, 
+                varianzaVehicular, 
+                chanceGeneracionEmergencia, 
+                volumenEmergencia, 
+                varianzaEmergencia, 
+                timestamp,
+                socket,
+                congestion):
+        timestampAntes = self.timestampPrevio
+        timestampDespues = timestamp
+        diferenciaTimestamps = devolverDiferenciaTimestampsEnSegundos(timestampAntes, timestampDespues)
+
+        #print(f"Diferencia: {diferenciaTimestamps} > intervalo tiempo: {self.intervaloDeTiempo}  = {diferenciaTimestamps > self.intervaloDeTiempo}")
+
+        if(diferenciaTimestamps > self.intervaloDeTiempo) :
+
+            
+            print(f"timestamp previo: {self.timestampPrevio} | timestampEnvio: {self.timeStampEnvio} | timestampDespues: {timestampDespues}")
+            self.timestampPrevio = timestampAntes
+            self.timeStampEnvio = timestampDespues
+            
+            if(congestion):
+                self.vehiculosContados = 30
+                socket.send_string(self.crearJSON())
+
+                print("Evento generado por espira")
+
+                self.timestampPrevio = timestampDespues
+
+                return 
+
+            print(f"Volumen vehicual: {volumenVehicular*3}")
+            sumador = random.randint(1, math.floor(volumenVehicular*3))
+            self.vehiculosContados = sumador
+
+            #Envio
+            socket.send_string(self.crearJSON())
+            print("Evento generado por espira")
+
+            self.timestampPrevio = timestampDespues
+
+            
+            pass
+        else:
+            pass
+        
