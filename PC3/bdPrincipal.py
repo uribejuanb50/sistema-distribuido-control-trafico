@@ -16,12 +16,14 @@ def main():
     bd = conectarMongoDB()
     print("[BD Principal] Esperando eventos...")
 
+    coleccion = "eventos"
+
     while True:
         try:
             mensaje = socket.recv_string()
             evento = json.loads(mensaje)
             evento["timestamp_recepcion"] = str(datetime.now())
-            resultado = bd["eventos"].insert_one(evento)
+            resultado = bd[coleccion].insert_one(evento)
             print(f"[BD Principal] Guardado: {resultado.inserted_id}")
         except Exception as e:
             print(f"[Error bdReplica] {type(e).__name__}: {e}")
