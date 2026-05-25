@@ -1,3 +1,4 @@
+#monitor.py
 import zmq
 import json
 
@@ -18,7 +19,7 @@ def switchMenu(eleccion, socketConsulta, socketAnaliticas):
 
 def consultar(socket) :
 
-    print("[Monitor] Bienvenido al servicio de consulta")
+    print("[Monitor] Bienvenido al servicio de monitoreo y consulta")
     print("[Monitor] Opciones para consultar: ")
     print("[Monitor] 1. Emergencaias: ")
     print("[Monitor] 2. Emergencias en los ultimos 10 segundos")

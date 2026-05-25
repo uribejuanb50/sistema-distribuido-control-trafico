@@ -1,3 +1,10 @@
+# controlSemaforos.py  (PC2)
+# - Recibe comandos PUSH/PULL desde analitica en el puerto 6000.
+# - Comandos normales: extienden el tiempo del semáforo correspondiente.
+# - Comandos "forzar": fuerzan el estado (verde la fila pedida, rojo la otra).
+#   Sirven para ola verde / paso de ambulancia y para cambios manuales.
+# - "RESET_NORMAL": vuelve al ciclo base.
+
 import zmq
 import json
 import time
@@ -5,8 +12,10 @@ from datetime import datetime
 
 saltoLinea = "\n"
 
-def devolverDiferenciaTimestampsEnSegundos(timestamp1, timestamp2):
-    return abs((timestamp1 - timestamp2).total_seconds())
+
+def devolverDiferenciaTimestampsEnSegundos(t1, t2):
+    return abs((t1 - t2).total_seconds())
+
 
 class Semaforo:
     def __init__(self, idSemaforo, interseccion, tiempoCambioOriginal, timestamp, enVerde):
@@ -19,39 +28,75 @@ class Semaforo:
         self.timestampFinal = "-"
 
     def informacionSemaforo(self):
-        stringRetorno  = f"ID semaforo: {self.idSemaforo}" + saltoLinea
-        stringRetorno += f"En verde: {self.enVerde}" + saltoLinea
-        stringRetorno += f"Tiempo original: {self.tiempoCambioOriginal}s" + saltoLinea
-        stringRetorno += f"Tiempo auxiliar: {self.tiempoCambioAuxiliar}s" + saltoLinea
-        return stringRetorno
+        s  = f"ID semaforo: {self.idSemaforo}" + saltoLinea
+        s += f"En verde: {self.enVerde}" + saltoLinea
+        s += f"Tiempo original: {self.tiempoCambioOriginal}s" + saltoLinea
+        s += f"Tiempo auxiliar: {self.tiempoCambioAuxiliar}s" + saltoLinea
+        return s
 
     def cambiarLuz(self):
         self.enVerde = not self.enVerde
-
-        estado = "VERDE" if self.enVerde else "ROJO"
+        estado  = "VERDE" if self.enVerde else "ROJO"
         estado1 = "ROJO" if self.enVerde else "VERDE"
-        
         print(f"[Semaforo {self.idSemaforo}] Cambió a {estado} | desde {estado1}")
 
-    def extenderTiempo(self, tiempoExtendido: float):
-        self.tiempoCambioAuxiliar = max(self.tiempoCambioAuxiliar, tiempoExtendido)
+    def extenderTiempo(self, tiempoExtendido):
+        self.tiempoCambioAuxiliar = max(self.tiempoCambioAuxiliar, float(tiempoExtendido))
         print(f"[Semaforo {self.idSemaforo}] Tiempo extendido a {self.tiempoCambioAuxiliar}s")
+
 
 class GestorSemaforos:
     def __init__(self):
         timestamp = datetime.now()
-        self.semaforoC = Semaforo("SEM_C", "C", 2, timestamp, True)
-        self.semaforoF = Semaforo("SEM_F", "F", 2, timestamp, False)
+        # Tiempo base 15s (lo que dice el enunciado para tráfico normal)
+        self.semaforoC = Semaforo("SEM_C", "C", 15, timestamp, True)
+        self.semaforoF = Semaforo("SEM_F", "F", 15, timestamp, False)
+        self.modoAmbulancia = False
 
-    def procesarComando(self, comando: dict):
-        """Recibe un comando del analítico y extiende el tiempo del semáforo indicado"""
+    def _forzarEstado(self, filaVerde, tiempo, motivo):
+        """Pone filaVerde en verde, la otra en rojo, y extiende tiempo."""
+        timestamp = datetime.now()
 
-        print(comando)
-        
-        fila = comando.get("fila", "C")
-        tiempo = float(comando.get("tiempoExtendido", 10))
+        if filaVerde == "C":
+            if not self.semaforoC.enVerde:
+                self.semaforoC.cambiarLuz()
+            if self.semaforoF.enVerde:
+                self.semaforoF.cambiarLuz()
+            self.semaforoC.timestampInicio = timestamp
+            self.semaforoF.timestampInicio = timestamp
+            self.semaforoC.extenderTiempo(tiempo)
+        else:  # F
+            if not self.semaforoF.enVerde:
+                self.semaforoF.cambiarLuz()
+            if self.semaforoC.enVerde:
+                self.semaforoC.cambiarLuz()
+            self.semaforoC.timestampInicio = timestamp
+            self.semaforoF.timestampInicio = timestamp
+            self.semaforoF.extenderTiempo(tiempo)
+
+        print(f"[Control] Estado FORZADO → fila {filaVerde} en verde | motivo: {motivo}")
+
+    def procesarComando(self, comando):
         motivo = comando.get("motivo", "")
 
+        # Reset al ciclo normal
+        if motivo == "RESET_NORMAL":
+            self.modoAmbulancia = False
+            self.semaforoC.tiempoCambioAuxiliar = self.semaforoC.tiempoCambioOriginal
+            self.semaforoF.tiempoCambioAuxiliar = self.semaforoF.tiempoCambioOriginal
+            print("[Control] Reseteado al ciclo normal")
+            return
+
+        fila   = comando.get("fila", "C")
+        tiempo = float(comando.get("tiempoExtendido", 10))
+        forzar = comando.get("forzar", False)
+
+        if forzar:
+            self.modoAmbulancia = (motivo == "AMBULANCIA")
+            self._forzarEstado(fila, tiempo, motivo)
+            return
+
+        # Comando normal: solo extiende
         if fila == self.semaforoC.interseccion:
             self.semaforoC.extenderTiempo(tiempo)
             print(f"[Control] Comando aplicado a SEM_C | motivo: {motivo}")
@@ -64,47 +109,49 @@ class GestorSemaforos:
 
         if self.semaforoC.enVerde:
             diferencia = devolverDiferenciaTimestampsEnSegundos(
-                self.semaforoC.timestampInicio, timestamp)
+                self.semaforoC.timestampInicio, timestamp
+            )
             if diferencia > self.semaforoC.tiempoCambioAuxiliar:
                 self.semaforoC.timestampFinal = timestamp
                 self.semaforoC.cambiarLuz()
+                self.semaforoF.cambiarLuz()
                 self.semaforoC.timestampInicio = timestamp
-                self.semaforoC.tiempoCambioAuxiliar = self.semaforoC.tiempoCambioOriginal
-                self.semaforoC.enVerde = False
-                self.semaforoF.enVerde = True
                 self.semaforoF.timestampInicio = timestamp
+                self.semaforoC.tiempoCambioAuxiliar = self.semaforoC.tiempoCambioOriginal
+                if self.modoAmbulancia:
+                    self.modoAmbulancia = False
+                    print("[Control] Ola verde finalizada, vuelve al ciclo normal")
         else:
             diferencia = devolverDiferenciaTimestampsEnSegundos(
-                self.semaforoF.timestampInicio, timestamp)
+                self.semaforoF.timestampInicio, timestamp
+            )
             if diferencia > self.semaforoF.tiempoCambioAuxiliar:
                 self.semaforoF.timestampFinal = timestamp
                 self.semaforoF.cambiarLuz()
+                self.semaforoC.cambiarLuz()
+                self.semaforoC.timestampInicio = timestamp
                 self.semaforoF.timestampInicio = timestamp
                 self.semaforoF.tiempoCambioAuxiliar = self.semaforoF.tiempoCambioOriginal
-                self.semaforoF.enVerde = False
-                self.semaforoC.enVerde = True
-                self.semaforoC.timestampInicio = timestamp
+                if self.modoAmbulancia:
+                    self.modoAmbulancia = False
+                    print("[Control] Ola verde finalizada, vuelve al ciclo normal")
+
 
 def crearSocketPull(puerto):
-    """Crea socket PULL para recibir comandos del analítico"""
     context = zmq.Context()
     socket = context.socket(zmq.PULL)
-    #socket.connect(f"tcp://localhost:{puerto}")
     socket.bind(f"tcp://0.0.0.0:{puerto}")
     socket.setsockopt(zmq.RCVTIMEO, 100)
-    
     return socket
+
 
 def main():
     socketComandos = crearSocketPull(6000)
-    socketComandos.setsockopt(zmq.RCVTIMEO, 100)  # espera max 100ms por mensaje
-
     gestor = GestorSemaforos()
-    print("[Control Semáforos] Corriendo...")
+    print("[Control Semáforos] Corriendo en puerto 6000...")
 
     while True:
         try:
-            # Intenta recibir un comando sin bloquearse
             try:
                 mensaje = socketComandos.recv_string()
                 comando = json.loads(mensaje)
@@ -115,9 +162,9 @@ def main():
 
             gestor.simular()
             time.sleep(1)
-
         except Exception as e:
             print(f"[Error controlSemaforos] {type(e).__name__}: {e}")
+
 
 if __name__ == "__main__":
     main()
