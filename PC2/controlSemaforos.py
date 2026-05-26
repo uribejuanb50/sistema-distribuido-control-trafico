@@ -137,8 +137,7 @@ class GestorSemaforos:
                     print("[Control] Ola verde finalizada, vuelve al ciclo normal")
 
 
-def crearSocketPull(puerto):
-    context = zmq.Context()
+def crearSocketPull(context, puerto):
     socket = context.socket(zmq.PULL)
     socket.bind(f"tcp://0.0.0.0:{puerto}")
     socket.setsockopt(zmq.RCVTIMEO, 100)
@@ -146,7 +145,8 @@ def crearSocketPull(puerto):
 
 
 def main():
-    socketComandos = crearSocketPull(6000)
+    context = zmq.Context()
+    socketComandos = crearSocketPull(context, 6000)
     gestor = GestorSemaforos()
     print("[Control Semáforos] Corriendo en puerto 6000...")
 
