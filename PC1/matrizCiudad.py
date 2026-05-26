@@ -529,7 +529,7 @@ def devolverDiferenciaTimestampsEnSegundos(timestamp1, timestamp2):
     #print(f"Diferencia: {diferencia.total_seconds()}")
     return abs(diferencia.total_seconds())
 
-def crearSocketPublicador(puerto = 5554):
+def crearSocketPublicador(puerto = 5551):
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
