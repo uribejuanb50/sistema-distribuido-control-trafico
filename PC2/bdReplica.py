@@ -1,169 +1,111 @@
-# controlSemaforos.py  (PC2)
-# - Recibe comandos PUSH/PULL desde analitica en el puerto 6000.
-# - Comandos normales: extienden el tiempo del semáforo correspondiente.
-# - Comandos "forzar": fuerzan el estado (verde la fila pedida, rojo la otra).
-#   Sirven para ola verde / paso de ambulancia y para cambios manuales.
-# - "RESET_NORMAL": vuelve al ciclo base.
+# bdReplica.py  (PC2)
+# Dos hilos:
+#   - hiloEscritura : PULL en 6001, inserta eventos en mongo
+#   - hiloConsulta  : REP  en 7003, atiende consultas síncronas del monitor
 
 import zmq
 import json
-import time
-from datetime import datetime
-
-saltoLinea = "\n"
-
-
-def devolverDiferenciaTimestampsEnSegundos(t1, t2):
-    return abs((t1 - t2).total_seconds())
+import threading
+from pymongo import MongoClient
+from datetime import datetime, timedelta
 
 
-class Semaforo:
-    def __init__(self, idSemaforo, interseccion, tiempoCambioOriginal, timestamp, enVerde):
-        self.idSemaforo = idSemaforo
-        self.interseccion = interseccion
-        self.enVerde = enVerde
-        self.tiempoCambioOriginal = float(tiempoCambioOriginal)
-        self.tiempoCambioAuxiliar = float(tiempoCambioOriginal)
-        self.timestampInicio = timestamp
-        self.timestampFinal = "-"
+# ===================== mongo =====================
 
-    def informacionSemaforo(self):
-        s  = f"ID semaforo: {self.idSemaforo}" + saltoLinea
-        s += f"En verde: {self.enVerde}" + saltoLinea
-        s += f"Tiempo original: {self.tiempoCambioOriginal}s" + saltoLinea
-        s += f"Tiempo auxiliar: {self.tiempoCambioAuxiliar}s" + saltoLinea
-        return s
-
-    def cambiarLuz(self):
-        self.enVerde = not self.enVerde
-        estado  = "VERDE" if self.enVerde else "ROJO"
-        estado1 = "ROJO" if self.enVerde else "VERDE"
-        print(f"[Semaforo {self.idSemaforo}] Cambió a {estado} | desde {estado1}")
-
-    def extenderTiempo(self, tiempoExtendido):
-        self.tiempoCambioAuxiliar = max(self.tiempoCambioAuxiliar, float(tiempoExtendido))
-        print(f"[Semaforo {self.idSemaforo}] Tiempo extendido a {self.tiempoCambioAuxiliar}s")
+def conectarMongoBD(host="localhost", puerto=27017, nombreBD="trafico_replica"):
+    cliente = MongoClient(f"mongodb://{host}:{puerto}/")
+    print(f"[BD Réplica] Conectado a {host}:{puerto} - BD: {nombreBD}")
+    return cliente[nombreBD]
 
 
-class GestorSemaforos:
-    def __init__(self):
-        timestamp = datetime.now()
-        # Tiempo base 15s (lo que dice el enunciado para tráfico normal)
-        self.semaforoC = Semaforo("SEM_C", "C", 15, timestamp, True)
-        self.semaforoF = Semaforo("SEM_F", "F", 15, timestamp, False)
-        self.modoAmbulancia = False
-
-    def _forzarEstado(self, filaVerde, tiempo, motivo):
-        """Pone filaVerde en verde, la otra en rojo, y extiende tiempo."""
-        timestamp = datetime.now()
-
-        if filaVerde == "C":
-            if not self.semaforoC.enVerde:
-                self.semaforoC.cambiarLuz()
-            if self.semaforoF.enVerde:
-                self.semaforoF.cambiarLuz()
-            self.semaforoC.timestampInicio = timestamp
-            self.semaforoF.timestampInicio = timestamp
-            self.semaforoC.extenderTiempo(tiempo)
-        else:  # F
-            if not self.semaforoF.enVerde:
-                self.semaforoF.cambiarLuz()
-            if self.semaforoC.enVerde:
-                self.semaforoC.cambiarLuz()
-            self.semaforoC.timestampInicio = timestamp
-            self.semaforoF.timestampInicio = timestamp
-            self.semaforoF.extenderTiempo(tiempo)
-
-        print(f"[Control] Estado FORZADO → fila {filaVerde} en verde | motivo: {motivo}")
-
-    def procesarComando(self, comando):
-        motivo = comando.get("motivo", "")
-
-        # Reset al ciclo normal
-        if motivo == "RESET_NORMAL":
-            self.modoAmbulancia = False
-            self.semaforoC.tiempoCambioAuxiliar = self.semaforoC.tiempoCambioOriginal
-            self.semaforoF.tiempoCambioAuxiliar = self.semaforoF.tiempoCambioOriginal
-            print("[Control] Reseteado al ciclo normal")
-            return
-
-        fila   = comando.get("fila", "C")
-        tiempo = float(comando.get("tiempoExtendido", 10))
-        forzar = comando.get("forzar", False)
-
-        if forzar:
-            self.modoAmbulancia = (motivo == "AMBULANCIA")
-            self._forzarEstado(fila, tiempo, motivo)
-            return
-
-        # Comando normal: solo extiende
-        if fila == self.semaforoC.interseccion:
-            self.semaforoC.extenderTiempo(tiempo)
-            print(f"[Control] Comando aplicado a SEM_C | motivo: {motivo}")
-        else:
-            self.semaforoF.extenderTiempo(tiempo)
-            print(f"[Control] Comando aplicado a SEM_F | motivo: {motivo}")
-
-    def simular(self):
-        timestamp = datetime.now()
-
-        if self.semaforoC.enVerde:
-            diferencia = devolverDiferenciaTimestampsEnSegundos(
-                self.semaforoC.timestampInicio, timestamp
-            )
-            if diferencia > self.semaforoC.tiempoCambioAuxiliar:
-                self.semaforoC.timestampFinal = timestamp
-                self.semaforoC.cambiarLuz()
-                self.semaforoF.cambiarLuz()
-                self.semaforoC.timestampInicio = timestamp
-                self.semaforoF.timestampInicio = timestamp
-                self.semaforoC.tiempoCambioAuxiliar = self.semaforoC.tiempoCambioOriginal
-                if self.modoAmbulancia:
-                    self.modoAmbulancia = False
-                    print("[Control] Ola verde finalizada, vuelve al ciclo normal")
-        else:
-            diferencia = devolverDiferenciaTimestampsEnSegundos(
-                self.semaforoF.timestampInicio, timestamp
-            )
-            if diferencia > self.semaforoF.tiempoCambioAuxiliar:
-                self.semaforoF.timestampFinal = timestamp
-                self.semaforoF.cambiarLuz()
-                self.semaforoC.cambiarLuz()
-                self.semaforoC.timestampInicio = timestamp
-                self.semaforoF.timestampInicio = timestamp
-                self.semaforoF.tiempoCambioAuxiliar = self.semaforoF.tiempoCambioOriginal
-                if self.modoAmbulancia:
-                    self.modoAmbulancia = False
-                    print("[Control] Ola verde finalizada, vuelve al ciclo normal")
+def consultarMongo(bd, coleccion, filtro, proyeccion={"_id": 0}):
+    return list(bd[coleccion].find(filtro, proyeccion))
 
 
-def crearSocketPull(puerto):
-    context = zmq.Context()
+def menuConsultas(eleccion, bd):
+    coleccion = "eventos"
+    datetimeya = datetime.now()
+    datetimemenos10 = datetimeya - timedelta(seconds=10)
+    inicio_str = datetimemenos10.strftime("%Y-%m-%d %H:%M:%S.%f")
+    fin_str    = datetimeya.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    opciones = {
+        "1": lambda: consultarMongo(bd, coleccion, {"emergencia": True}),
+        "2": lambda: consultarMongo(bd, coleccion, {
+            "emergencia": True,
+            "timestamp_recepcion": {"$gte": inicio_str, "$lte": fin_str},
+        }),
+        "3": lambda: consultarMongo(bd, coleccion, {"timestamp": {"$regex": r"1[6-7]"}}),
+        "4": lambda: consultarMongo(bd, coleccion, {"tipo_sensor": "camara"}),
+        "5": lambda: consultarMongo(bd, coleccion, {"tipo_sensor": "gps"}),
+        "6": lambda: consultarMongo(bd, coleccion, {"tipo_sensor": "espira"}),
+        "7": lambda: consultarMongo(bd, coleccion, {"interseccion": eleccion.get("interseccion", "")}),
+        "ping": lambda: {"status": "OK", "rol": "replica", "timestamp": str(datetime.now())},
+    }
+
+    resultados = opciones.get(eleccion.get("consulta"), lambda: "No hay opción")()
+    return json.dumps(resultados, indent=4, default=str)
+
+
+# ===================== hilos =====================
+
+def hiloEscritura(bd, puerto):
+    """Hilo ASÍNCRONO: recibe eventos vía PULL y los guarda en mongo."""
+    context = zmq.Context.instance()
     socket = context.socket(zmq.PULL)
     socket.bind(f"tcp://0.0.0.0:{puerto}")
-    socket.setsockopt(zmq.RCVTIMEO, 100)
-    return socket
-
-
-def main():
-    socketComandos = crearSocketPull(6000)
-    gestor = GestorSemaforos()
-    print("[Control Semáforos] Corriendo en puerto 6000...")
+    print(f"[BD Réplica - Escritura] PULL en puerto {puerto}")
 
     while True:
         try:
-            try:
-                mensaje = socketComandos.recv_string()
-                comando = json.loads(mensaje)
-                print(f"[Control] Comando recibido: {comando}")
-                gestor.procesarComando(comando)
-            except zmq.Again:
-                pass  # no había mensaje, sigue simulando
-
-            gestor.simular()
-            time.sleep(1)
+            mensaje = socket.recv_string()
+            evento = json.loads(mensaje)
+            evento["timestamp_recepcion"] = str(datetime.now())
+            resultado = bd["eventos"].insert_one(evento)
+            print(f"[BD Réplica - Escritura] Guardado: {resultado.inserted_id}")
         except Exception as e:
-            print(f"[Error controlSemaforos] {type(e).__name__}: {e}")
+            print(f"[Error bdReplica-Escritura] {type(e).__name__}: {e}")
+
+
+def hiloConsulta(bd, puerto):
+    """Hilo SÍNCRONO: atiende consultas REQ/REP."""
+    context = zmq.Context.instance()
+    socket = context.socket(zmq.REP)
+    socket.bind(f"tcp://0.0.0.0:{puerto}")
+    print(f"[BD Réplica - Consulta] REP en puerto {puerto}")
+
+    while True:
+        try:
+            mensaje = socket.recv_string()
+            consulta = json.loads(mensaje)
+            respuesta = menuConsultas(consulta, bd)
+            socket.send_string(respuesta)
+        except Exception as e:
+            print(f"[Error bdReplica-Consulta] {type(e).__name__}: {e}")
+            try:
+                socket.send_string(json.dumps({"error": str(e)}))
+            except Exception:
+                pass
+
+
+# ===================== main =====================
+
+def main():
+    PUERTO_ESCRITURA = 6001
+    PUERTO_CONSULTA  = 7003
+
+    bd = conectarMongoBD()
+
+    hiloW = threading.Thread(target=hiloEscritura, args=(bd, PUERTO_ESCRITURA), daemon=True)
+    hiloR = threading.Thread(target=hiloConsulta,  args=(bd, PUERTO_CONSULTA),  daemon=True)
+
+    hiloW.start()
+    hiloR.start()
+
+    print("[BD Réplica] Servicio iniciado (escritura asíncrona + consulta síncrona)")
+
+    hiloW.join()
+    hiloR.join()
 
 
 if __name__ == "__main__":
